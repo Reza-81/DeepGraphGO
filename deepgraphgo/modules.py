@@ -21,11 +21,11 @@ class NodeUpdate(nn.Module):
         self.ppi_linear = nn.Linear(in_f, out_f)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, node):
-        outputs = self.dropout(F.relu(self.ppi_linear(node.data['ppi_out'])))
-        if 'res' in node.data:
-            outputs = outputs + node.data['res']
-        return {'h': outputs}
+    def forward(self, ppi_out, res=None):
+        outputs = self.dropout(F.relu(self.ppi_linear(ppi_out)))
+        if res is not None:
+            outputs = outputs + res
+        return outputs
 
     def reset_parameters(self):
         nn.init.xavier_uniform_(self.ppi_linear.weight)

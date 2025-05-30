@@ -43,16 +43,28 @@ class GcnNet(nn.Module):
             update.reset_parameters()
         nn.init.xavier_uniform_(self.output.weight)
 
-    def forward(self, nf: dgl.NodeFlow, inputs):
-        nf.copy_from_parent()
-        outputs = self.dropout(F.relu(self.input(*inputs) + self.input_bias))
-        nf.layers[0].data['h'] = outputs
-        for i, update in enumerate(self.update):
+    def forward(self, blocks, inputs):
+        # blocks: list of dgl.Block, inputs: tuple for EmbeddingBag
+        h = self.dropout(F.relu(self.input(*inputs) + self.input_bias))
+        for i, (block, update) in enumerate(zip(blocks, self.update)):
+            # Message passing for each block/layer
+            # Get source and destination node features
+            h_src = h
+            # Edge weights for 'ppi' and 'self'
+            ppi = block.edata['ppi'].unsqueeze(-1)
             if self.residual:
-                nf.block_compute(i,
-                                 dgl.function.u_mul_e('h', 'self', out='m_res'),
-                                 dgl.function.sum(msg='m_res', out='res'))
-            nf.block_compute(i,
-                             dgl.function.u_mul_e('h', 'ppi', out='ppi_m_out'),
-                             dgl.function.sum(msg='ppi_m_out', out='ppi_out'), update)
-        return self.output(nf.layers[-1].data['h'])
+                self_w = block.edata['self'].unsqueeze(-1)
+                m_res = h_src[block.edges()[0]] * self_w
+                res = torch.zeros((block.num_dst_nodes(), h_src.shape[1]), device=h_src.device)
+                res = res.index_add(0, block.edges()[1], m_res)
+            else:
+                res = None
+            ppi_m_out = h_src[block.edges()[0]] * ppi
+            ppi_out = torch.zeros((block.num_dst_nodes(), h_src.shape[1]), device=h_src.device)
+            ppi_out = ppi_out.index_add(0, block.edges()[1], ppi_m_out)
+            # NodeUpdate expects ppi_out and optionally res
+            if res is not None:
+                h = update(ppi_out, res)
+            else:
+                h = update(ppi_out)
+        return self.output(h)
