@@ -43,8 +43,10 @@ def main(data_cnf, model_cnf, mode, model_id):
     self_loop = torch.zeros_like(dgl_graph.edata['ppi'])
     self_loop[dgl_graph.edge_ids(nr_:=np.arange(dgl_graph.number_of_nodes()), nr_)] = 1.0
     dgl_graph.edata['self'] = self_loop
-    dgl_graph.edata['ppi'] = dgl_graph.edata['ppi'].float().cuda()
-    dgl_graph.edata['self'] = dgl_graph.edata['self'].float().cuda()
+    # Move graph to CUDA before assigning CUDA tensors to edge data
+    dgl_graph = dgl_graph.to('cuda')
+    dgl_graph.edata['ppi'] = dgl_graph.edata['ppi'].float()
+    dgl_graph.edata['self'] = dgl_graph.edata['self'].float()
     logger.info(F'{dgl_graph}')
     network_x = ssp.load_npz(data_cnf['network']['feature'])
 
