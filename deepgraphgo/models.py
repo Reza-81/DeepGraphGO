@@ -13,6 +13,7 @@ import dgl
 from pathlib import Path
 from tqdm import tqdm
 from logzero import logger
+import dgl.dataloading as dgldl
 
 from deepgraphgo.networks import GcnNet
 from deepgraphgo.evaluation import fmax, aupr
@@ -33,23 +34,21 @@ class Model(object):
         self.optimizer = None
         self.dgl_graph, self.network_x, self.batch_size = dgl_graph, network_x, None
 
-    def get_scores(self, nf: dgl.NodeFlow):
-        batch_x = self.network_x[nf.layer_parent_nid(0).numpy()]
-        scores = self.network(nf, (torch.from_numpy(batch_x.indices).cuda().long(),
-                                   torch.from_numpy(batch_x.indptr).cuda().long(),
-                                   torch.from_numpy(batch_x.data).cuda().float()))
+    def get_scores(self, blocks, batch_x):
+        # blocks: list of dgl.Block, batch_x: input features for the first block
+        scores = self.network(blocks, batch_x)
         return scores
 
     def get_optimizer(self, **kwargs):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), **kwargs)
 
-    def train_step(self, train_x, train_y, update, **kwargs):
+    def train_step(self, blocks, batch_x, batch_y, update, **kwargs):
         self.model.train()
-        scores = self.get_scores(train_x)
-        loss = self.loss_fn(scores, train_y.cuda())
+        scores = self.get_scores(blocks, batch_x)
+        loss = self.loss_fn(scores, batch_y.cuda())
         loss.backward()
-        if update:
-            self.optimizer.step(closure=None)
+        if update and self.optimizer is not None:
+            self.optimizer.step()
             self.optimizer.zero_grad()
         return loss.item()
 
@@ -58,20 +57,30 @@ class Model(object):
         self.batch_size = batch_size
 
         (train_ppi, train_y), (valid_ppi, valid_y) = train_data, valid_data
-        ppi_train_idx = np.full(self.network_x.shape[0], -1, dtype=np.int)
+        ppi_train_idx = np.full(self.network_x.shape[0], -1, dtype=int)
         ppi_train_idx[train_ppi] = np.arange(train_ppi.shape[0])
         best_fmax = 0.0
+
+        sampler = dgldl.NeighborSampler([self.model.num_gcn] * self.model.num_gcn)
+        train_nids = torch.from_numpy(train_ppi).long().cuda()
+        train_dataloader = dgldl.NodeDataLoader(
+            self.dgl_graph, train_nids, sampler,
+            batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0)
+
         for epoch_idx in range(epochs_num):
             train_loss = 0.0
-            for nf in tqdm(dgl.contrib.sampling.sampler.NeighborSampler(self.dgl_graph, batch_size,
-                                                                        self.dgl_graph.number_of_nodes(),
-                                                                        num_hops=self.model.num_gcn,
-                                                                        seed_nodes=train_ppi,
-                                                                        prefetch=True, shuffle=True),
-                           desc=F'Epoch {epoch_idx}', leave=False, dynamic_ncols=True,
-                           total=(len(train_ppi) + batch_size - 1) // batch_size):
-                batch_y = train_y[ppi_train_idx[nf.layer_parent_nid(-1).numpy()]].toarray()
-                train_loss += self.train_step(nf, torch.from_numpy(batch_y), True)
+            for input_nodes, output_nodes, blocks in tqdm(train_dataloader, desc=f'Epoch {epoch_idx}', leave=False, dynamic_ncols=True):
+                # batch_x: features for input_nodes
+                batch_x = self.network_x[input_nodes.cpu().numpy()]
+                batch_x = (
+                    torch.from_numpy(batch_x.indices).cuda().long(),
+                    torch.from_numpy(batch_x.indptr).cuda().long(),
+                    torch.from_numpy(batch_x.data).cuda().float()
+                )
+                # batch_y: labels for output_nodes
+                batch_y = train_y[ppi_train_idx[output_nodes.cpu().numpy()]].toarray()
+                batch_y = torch.from_numpy(batch_y)
+                train_loss += self.train_step(blocks, batch_x, batch_y, True)
             best_fmax = self.valid(valid_ppi, valid_y, epoch_idx, train_loss / len(train_ppi), best_fmax)
 
     def valid(self, valid_loader, targets, epoch_idx, train_loss, best_fmax):
@@ -85,25 +94,34 @@ class Model(object):
         return best_fmax
 
     @torch.no_grad()
-    def predict_step(self, data_x):
+    def predict_step(self, blocks, batch_x):
         self.model.eval()
-        return torch.sigmoid(self.get_scores(data_x)).cpu().numpy()
+        return torch.sigmoid(self.get_scores(blocks, batch_x)).cpu().numpy()
 
     def predict(self, test_ppi, batch_size=None, valid=False, **kwargs):
         if batch_size is None:
             batch_size = self.batch_size
         if not valid:
             self.load_model()
-        unique_test_ppi = np.unique(test_ppi)
-        mapping = {x: i for i, x in enumerate(unique_test_ppi)}
-        test_ppi = np.asarray([mapping[x] for x in test_ppi])
-        scores = np.vstack([self.predict_step(nf)
-                            for nf in dgl.contrib.sampling.sampler.NeighborSampler(self.dgl_graph, batch_size,
-                                                                                   self.dgl_graph.number_of_nodes(),
-                                                                                   num_hops=self.model.num_gcn,
-                                                                                   seed_nodes=unique_test_ppi,
-                                                                                   prefetch=True)])
-        return scores[test_ppi]
+        sampler = dgldl.NeighborSampler([self.model.num_gcn] * self.model.num_gcn)
+        test_nids = torch.from_numpy(np.unique(test_ppi)).long().cuda()
+        test_dataloader = dgldl.NodeDataLoader(
+            self.dgl_graph, test_nids, sampler,
+            batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0)
+        mapping = {x: i for i, x in enumerate(np.unique(test_ppi))}
+        test_ppi_idx = np.asarray([mapping[x] for x in test_ppi])
+        scores_list = []
+        for input_nodes, output_nodes, blocks in test_dataloader:
+            batch_x = self.network_x[input_nodes.cpu().numpy()]
+            batch_x = (
+                torch.from_numpy(batch_x.indices).cuda().long(),
+                torch.from_numpy(batch_x.indptr).cuda().long(),
+                torch.from_numpy(batch_x.data).cuda().float()
+            )
+            batch_scores = self.predict_step(blocks, batch_x)
+            scores_list.append(batch_scores)
+        scores = np.vstack(scores_list)
+        return scores[test_ppi_idx]
 
     def save_model(self):
         torch.save(self.model.state_dict(), self.model_path)
