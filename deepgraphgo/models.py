@@ -63,7 +63,7 @@ class Model(object):
 
         sampler = dgldl.NeighborSampler([self.model.num_gcn] * self.model.num_gcn)
         train_nids = torch.from_numpy(train_ppi).long().cuda()
-        train_dataloader = dgldl.NodeDataLoader(
+        train_dataloader = dgldl.DataLoader(
             self.dgl_graph, train_nids, sampler,
             batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0)
 
