@@ -105,7 +105,7 @@ class Model(object):
             self.load_model()
         sampler = dgldl.NeighborSampler([self.model.num_gcn] * self.model.num_gcn)
         test_nids = torch.from_numpy(np.unique(test_ppi)).long().cuda()
-        test_dataloader = dgldl.NodeDataLoader(
+        test_dataloader = dgldl.DataLoader(
             self.dgl_graph, test_nids, sampler,
             batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0)
         mapping = {x: i for i, x in enumerate(np.unique(test_ppi))}
