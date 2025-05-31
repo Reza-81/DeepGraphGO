@@ -5,8 +5,8 @@ model:
   num_gcn: 2
 
 train:
-  epochs_num: 10
-  batch_size: 40
+  epochs_num: 100
+  batch_size: 100
 
 test:
-  batch_size: 40
+  batch_size: 100
