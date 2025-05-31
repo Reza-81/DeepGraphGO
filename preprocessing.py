@@ -29,7 +29,7 @@ def get_norm_net_mat(net_mat):
 @click.command()
 @click.argument('ppi_net_mat_path', type=click.Path(exists=True))
 @click.argument('dgl_graph_path', type=click.Path())
-@click.argument('top', type=click.INT, default=10, required=False)
+@click.argument('top', type=click.INT, default=100, required=False)
 def main(ppi_net_mat_path, dgl_graph_path, top):
     ppi_net_mat = (mat_:=ssp.load_npz(ppi_net_mat_path)) + ssp.eye(mat_.shape[0], format='csr')
     logger.info(F'{ppi_net_mat.shape} {ppi_net_mat.nnz}')
