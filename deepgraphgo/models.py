@@ -85,6 +85,9 @@ class Model(object):
 
     def valid(self, valid_loader, targets, epoch_idx, train_loss, best_fmax):
         scores = self.predict(valid_loader, valid=True)
+        print('======== scores: =========')
+        print(scores)
+        print('==========================')
         (fmax_, t_), aupr_ = fmax(targets, scores), aupr(targets.toarray().flatten(), scores.flatten())
         logger.info(F'Epoch {epoch_idx}: Loss: {train_loss:.5f} '
                     F'Fmax: {fmax_:.3f} {t_:.2f} AUPR: {aupr_:.3f}')
