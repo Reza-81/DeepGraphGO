@@ -42,17 +42,18 @@ def main(ppi_net_mat_path, dgl_graph_path, top):
             r.append(i)
             c.append(c_)
             v.append(v_)
-    print('phase 2 done.')
+    print('phase 2 done.') # 5 GB
     ppi_net_mat = get_norm_net_mat(ssp.csc_matrix((v, (r, c)), shape=ppi_net_mat.shape).T)
     print('phase 3 done.')
     logger.info(F'{ppi_net_mat.shape} {ppi_net_mat.nnz}')
     ppi_net_mat_coo = ssp.coo_matrix(ppi_net_mat)
     print('phase 4 done.')
     nx_graph = nx.DiGraph()
-    print('creating new dgl graph.')
+    print('creating new nx graph.') # 10 GB
     for u, v, d in tqdm(zip(ppi_net_mat_coo.row, ppi_net_mat_coo.col, ppi_net_mat_coo.data),
                         total=ppi_net_mat_coo.nnz, desc='PPI'):
         nx_graph.add_edge(u, v, ppi=d)
+    print('creating dgl graph from nx graph.')
     dgl_graph = dgl.from_networkx(nx_graph, edge_attrs=['ppi'])
     print('phase 6 done.')
     assert dgl_graph.in_degrees().max() <= top
