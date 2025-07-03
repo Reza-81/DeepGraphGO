@@ -56,9 +56,7 @@ def main(ppi_net_mat_path, dgl_graph_path, top):
     del r
     del c
     del v
-    del u
-    del v
-    del d
+    del ppi_net_mat
     print('variables deleted.')
     print('creating dgl graph from nx graph.')
     dgl_graph = dgl.from_networkx(nx_graph, edge_attrs=['ppi'])
