@@ -37,7 +37,7 @@ def main(ppi_net_mat_path, dgl_graph_path, top):
     r, c, v = [], [], []
     print('phase 2 started.')
     for i in trange(ppi_net_mat.shape[0]):
-        print(f'node {i} is processing...')
+        # print(f'node {i} is processing...')
         for v_, c_ in sorted(zip(ppi_net_mat[i].data, ppi_net_mat[i].indices), reverse=True)[:top]:
             r.append(i)
             c.append(c_)
