@@ -32,21 +32,29 @@ def get_norm_net_mat(net_mat):
 @click.argument('top', type=click.INT, default=100, required=False)
 def main(ppi_net_mat_path, dgl_graph_path, top):
     ppi_net_mat = (mat_:=ssp.load_npz(ppi_net_mat_path)) + ssp.eye(mat_.shape[0], format='csr')
+    print('phase 1 done.')
     logger.info(F'{ppi_net_mat.shape} {ppi_net_mat.nnz}')
     r, c, v = [], [], []
+    print('phase 2 started.')
     for i in trange(ppi_net_mat.shape[0]):
+        print(f'node {i} is processing...')
         for v_, c_ in sorted(zip(ppi_net_mat[i].data, ppi_net_mat[i].indices), reverse=True)[:top]:
             r.append(i)
             c.append(c_)
             v.append(v_)
+    print('phase 2 done.')
     ppi_net_mat = get_norm_net_mat(ssp.csc_matrix((v, (r, c)), shape=ppi_net_mat.shape).T)
+    print('phase 3 done.')
     logger.info(F'{ppi_net_mat.shape} {ppi_net_mat.nnz}')
     ppi_net_mat_coo = ssp.coo_matrix(ppi_net_mat)
+    print('phase 4 done.')
     nx_graph = nx.DiGraph()
+    print('creating new dgl graph.')
     for u, v, d in tqdm(zip(ppi_net_mat_coo.row, ppi_net_mat_coo.col, ppi_net_mat_coo.data),
                         total=ppi_net_mat_coo.nnz, desc='PPI'):
         nx_graph.add_edge(u, v, ppi=d)
     dgl_graph = dgl.from_networkx(nx_graph, edge_attrs=['ppi'])
+    print('phase 6 done.')
     assert dgl_graph.in_degrees().max() <= top
     dgl.data.utils.save_graphs(dgl_graph_path, dgl_graph)
 
