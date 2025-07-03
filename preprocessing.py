@@ -53,6 +53,9 @@ def main(ppi_net_mat_path, dgl_graph_path, top):
     for u, v, d in tqdm(zip(ppi_net_mat_coo.row, ppi_net_mat_coo.col, ppi_net_mat_coo.data),
                         total=ppi_net_mat_coo.nnz, desc='PPI'):
         nx_graph.add_edge(u, v, ppi=d)
+    del r
+    del c
+    del v
     print('creating dgl graph from nx graph.')
     dgl_graph = dgl.from_networkx(nx_graph, edge_attrs=['ppi'])
     print('phase 6 done.')
