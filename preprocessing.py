@@ -57,15 +57,7 @@ def main(ppi_net_mat_path, dgl_graph_path, top):
     for u, v, d in tqdm(zip(ppi_net_mat_coo.row, ppi_net_mat_coo.col, ppi_net_mat_coo.data),
                         total=ppi_net_mat_coo.nnz, desc='PPI'):
         nx_graph.add_edge(u, v, ppi=d)
-    # print(f"Total memory of r: {asizeof.asizeof(r) / 1024**2:.2f} MB")
-    # print(f"Total memory of c: {asizeof.asizeof(c) / 1024**2:.2f} MB")
-    # print(f"Total memory of v: {asizeof.asizeof(v) / 1024**2:.2f} MB")
-    # print(f"Total memory of ppi_net_mat: {asizeof.asizeof(ppi_net_mat) / 1024**2:.2f} MB")
-    print('deleting variables...')
-    del r
-    del c
-    del v
-    del ppi_net_mat
+
     gc.collect()
     print('variables deleted.')
     print('sleep for 2 mins.')
