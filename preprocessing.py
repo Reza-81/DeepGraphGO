@@ -58,10 +58,6 @@ def main(ppi_net_mat_path, dgl_graph_path, top):
                         total=ppi_net_mat_coo.nnz, desc='PPI'):
         nx_graph.add_edge(u, v, ppi=d)
 
-    gc.collect()
-    print('variables deleted.')
-    print('sleep for 2 mins.')
-    time.sleep(120)
     print('creating dgl graph from nx graph.')
     dgl_graph = dgl.from_networkx(nx_graph, edge_attrs=['ppi'])
     print('phase 6 done.')

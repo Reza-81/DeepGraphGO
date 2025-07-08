@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script 2: Load processed PPI matrix and build DGL graph.
+Optimized Script 2: Load sparse matrix directly as COO and build DGL graph using low-level API.
 """
 
 import click
 import numpy as np
 import scipy.sparse as ssp
-import networkx as nx
 import dgl
-import dgl.data
-from tqdm import tqdm
+import torch
 from logzero import logger
-import gc
-import time
 
 
 @click.command()
@@ -21,22 +17,27 @@ import time
 @click.argument('dgl_graph_output_path', type=click.Path())
 @click.argument('top', type=click.INT, default=100, required=False)
 def main(filtered_mat_input_path, dgl_graph_output_path, top):
-    norm_mat = ssp.load_npz(filtered_mat_input_path)
-    logger.info(f'Loaded normalized matrix: {norm_mat.shape}, nnz={norm_mat.nnz}')
+    logger.info(f"Loading filtered PPI matrix from: {filtered_mat_input_path}")
 
-    ppi_net_mat_coo = ssp.coo_matrix(norm_mat)
-    nx_graph = nx.DiGraph()
-    for u, v, d in tqdm(zip(ppi_net_mat_coo.row, ppi_net_mat_coo.col, ppi_net_mat_coo.data),
-                        total=ppi_net_mat_coo.nnz, desc='PPI'):
-        nx_graph.add_edge(u, v, ppi=d)
+    # ✅ Load COO directly to avoid memory duplication
+    mat = ssp.load_npz(filtered_mat_input_path).tocoo()
 
-    gc.collect()
-    time.sleep(2)  # Optional: reduce or remove if not needed
-    dgl_graph = dgl.from_networkx(nx_graph, edge_attrs=['ppi'])
+    logger.info(f"Matrix loaded: shape={mat.shape}, nnz={mat.nnz}")
 
-    assert dgl_graph.in_degrees().max() <= top
-    dgl.data.utils.save_graphs(dgl_graph_output_path, dgl_graph)
-    logger.info(f'DGL graph saved to {dgl_graph_output_path}')
+    # ✅ Use DGL low-level API (faster and more memory-efficient than networkx)
+    src = torch.tensor(mat.row, dtype=torch.int64)
+    dst = torch.tensor(mat.col, dtype=torch.int64)
+    edge_attr = torch.tensor(mat.data, dtype=torch.float32)
+
+    g = dgl.graph((src, dst), num_nodes=mat.shape[0])
+    g.edata['ppi'] = edge_attr
+
+    # Optional check
+    assert g.in_degrees().max().item() <= top, "Max in-degree exceeds top."
+
+    # Save graph
+    dgl.data.utils.save_graphs(dgl_graph_output_path, g)
+    logger.info(f"DGL graph saved to: {dgl_graph_output_path}")
 
 
 if __name__ == '__main__':
