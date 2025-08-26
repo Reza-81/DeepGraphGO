@@ -31,7 +31,7 @@ def main(data_cnf, filtered_npz):
     logger.info(f'NetworkX graph created: nodes={nx_G.number_of_nodes()}, edges={nx_G.number_of_edges()}')
     
     logger.info('Generating Node2Vec embeddings')
-    node2vec = Node2Vec(nx_G, dimensions=128, walk_length=40, num_walks=5, p=1, q=1, 
+    node2vec = Node2Vec(nx_G, dimensions=128, walk_length=80, num_walks=10, p=1, q=1, 
                         weight_key='ppi', workers=4)
     model = node2vec.fit(window=10, min_count=1, batch_words=4)
     
