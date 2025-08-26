@@ -8,12 +8,12 @@ Created on 2020/8/25
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 from pathlib import Path
 from tqdm import tqdm
 from logzero import logger
 import dgl.dataloading as dgldl
 
-from deepgraphgo.networks import FeedForwardNet
 from deepgraphgo.evaluation import fmax, aupr
 
 __all__ = ['Model']
@@ -62,17 +62,19 @@ class Model(object):
         (train_ppi, train_y), (valid_ppi, valid_y) = train_data, valid_data
         best_fmax = 0.0
 
-        train_dataloader = dgldl.DataLoader(
-            range(len(train_ppi)), batch_size=batch_size, shuffle=True, drop_last=False, num_workers=0)
+        # Convert data to tensors and create dataset
+        train_features = self.network_x[train_ppi].toarray()
+        train_features = torch.from_numpy(train_features).float().cuda()
+        train_labels = torch.from_numpy(train_y.toarray()).float()
+        train_input_nodes = torch.from_numpy(train_ppi).long()
+        train_dataset = TensorDataset(train_features, train_labels, train_input_nodes)
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
         for epoch_idx in range(epochs_num):
             train_loss = 0.0
-            for batch_idx in tqdm(train_dataloader, desc=f'Epoch {epoch_idx}', leave=False, dynamic_ncols=True):
-                batch_x = self.network_x[train_ppi[batch_idx]].toarray()
-                batch_x = torch.from_numpy(batch_x).float().cuda()
-                batch_y = torch.from_numpy(train_y[batch_idx].toarray()).float()
-                input_nodes = train_ppi[batch_idx]
-                train_loss += self.train_step(batch_x, batch_y, input_nodes, True)
+            for batch_features, batch_labels, batch_input_nodes in tqdm(train_dataloader, desc=f'Epoch {epoch_idx}', leave=False, dynamic_ncols=True):
+                batch_features, batch_labels = batch_features.cuda(), batch_labels.cuda()
+                train_loss += self.train_step(batch_features, batch_labels, batch_input_nodes, True)
             best_fmax = self.valid(valid_ppi, valid_y, epoch_idx, train_loss / len(train_ppi), best_fmax)
 
     def valid(self, valid_ppi, valid_y, epoch_idx, train_loss, best_fmax):
@@ -94,14 +96,13 @@ class Model(object):
             batch_size = self.batch_size
         if not valid:
             self.load_model()
-        test_dataloader = dgldl.DataLoader(
-            range(len(test_ppi)), batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0)
+        test_features = self.network_x[test_ppi].toarray()
+        test_input_nodes = torch.from_numpy(test_ppi).long()
+        test_dataset = TensorDataset(torch.from_numpy(test_features).float().cuda(), test_input_nodes)
+        test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
         scores_list = []
-        for batch_idx in test_dataloader:
-            batch_x = self.network_x[test_ppi[batch_idx]].toarray()
-            batch_x = torch.from_numpy(batch_x).float().cuda()
-            input_nodes = test_ppi[batch_idx]
-            batch_scores = self.predict_step(batch_x, input_nodes)
+        for batch_features, batch_input_nodes in test_dataloader:
+            batch_scores = self.predict_step(batch_features, batch_input_nodes)
             scores_list.append(batch_scores)
         scores = np.vstack(scores_list)
         return scores
