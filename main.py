@@ -3,7 +3,6 @@
 """
 Created on 2020/8/25
 @author yrh
-
 """
 
 import warnings
@@ -26,15 +25,15 @@ from deepgraphgo.models import Model
 @click.option('--mode', type=click.Choice(['train', 'eval']), default=None)
 @click.option('--model-id', type=click.INT, default=None)
 def main(data_cnf, model_cnf, mode, model_id):
-    model_id = F'-Model-{model_id}' if model_id is not None else ''
+    model_id = f'-Model-{model_id}' if model_id is not None else ''
     yaml = YAML(typ='safe')
     data_cnf, model_cnf = yaml.load(Path(data_cnf)), yaml.load(Path(model_cnf))
     data_name, model_name = data_cnf['name'], model_cnf['name']
-    run_name = F'{model_name}{model_id}-{data_name}'
-    model, model_cnf['model']['model_path'] = None, Path(data_cnf['model_path'])/F'{run_name}'
+    run_name = f'{model_name}{model_id}-{data_name}'
+    model, model_cnf['model']['model_path'] = None, Path(data_cnf['model_path'])/f'{run_name}'
     data_cnf['mlb'] = Path(data_cnf['mlb'])
     data_cnf['results'] = Path(data_cnf['results'])
-    logger.info(F'Model: {model_name}, Path: {model_cnf["model"]["model_path"]}, Dataset: {data_name}')
+    logger.info(f'Model: {model_name}, Path: {model_cnf["model"]["model_path"]}, Dataset: {data_name}')
 
     net_pid_list = get_pid_list(data_cnf['network']['pid_list'])
     net_pid_map = {pid: i for i, pid in enumerate(net_pid_list)}
@@ -43,14 +42,13 @@ def main(data_cnf, model_cnf, mode, model_id):
     self_loop = torch.zeros_like(dgl_graph.edata['ppi'])
     self_loop[dgl_graph.edge_ids(nr_:=np.arange(dgl_graph.number_of_nodes()), nr_)] = 1.0
     dgl_graph.edata['self'] = self_loop
-    # Move graph to CUDA before assigning CUDA tensors to edge data
     dgl_graph = dgl_graph.to('cuda')
     dgl_graph.edata['ppi'] = dgl_graph.edata['ppi'].float()
     dgl_graph.edata['self'] = dgl_graph.edata['self'].float()
-    logger.info(F'{dgl_graph}')
+    logger.info(f'{dgl_graph}')
     network_x = ssp.load_npz(data_cnf['network']['feature'])
 
-    # NEW: Load Node2Vec embeddings (assumes generated beforehand)
+    # Load Node2Vec embeddings
     emb_path = 'data/ppi_node2vec_embeddings.npy'
     if Path(emb_path).exists():
         embeddings = torch.from_numpy(np.load(emb_path)).float().cuda()
@@ -70,13 +68,13 @@ def main(data_cnf, model_cnf, mode, model_id):
         *_, train_ppi, train_y = get_ppi_idx(train_pid_list, train_y, net_pid_map)
         *_, valid_ppi, valid_y = get_homo_ppi_idx(valid_pid_list, data_cnf['valid']['fasta_file'],
                                                   valid_y, net_pid_map, net_blastdb,
-                                                  data_cnf['results']/F'{data_name}-valid-ppi-blast-out')
-        logger.info(F'Number of Labels: {labels_num}')
-        logger.info(F'Size of Training Set: {len(train_ppi)}')
-        logger.info(F'Size of Validation Set: {len(valid_ppi)}')
+                                                  data_cnf['results']/f'{data_name}-valid-ppi-blast-out')
+        logger.info(f'Number of Labels: {labels_num}')
+        logger.info(f'Size of Training Set: {len(train_ppi)}')
+        logger.info(f'Size of Validation Set: {len(valid_ppi)}')
 
         model = Model(labels_num=labels_num, dgl_graph=dgl_graph, network_x=network_x,
-                      input_size=network_x.shape[1], embeddings=embeddings, **model_cnf['model'])  # UPDATED: Pass embeddings
+                      embeddings=embeddings, **model_cnf['model'])
         model.train((train_ppi, train_y), (valid_ppi, valid_y), **model_cnf['train'])
 
     if mode is None or mode == 'eval':
@@ -84,17 +82,16 @@ def main(data_cnf, model_cnf, mode, model_id):
         labels_num = len(mlb.classes_)
         if model is None:
             model = Model(labels_num=labels_num, dgl_graph=dgl_graph, network_x=network_x,
-                          input_size=network_x.shape[1], embeddings=embeddings, **model_cnf['model'])  # UPDATED: Pass embeddings
+                          embeddings=embeddings, **model_cnf['model'])
         test_cnf = data_cnf['test']
         test_name = test_cnf.pop('name')
         test_pid_list, _, test_go = get_data(**test_cnf)
         test_res_idx_, test_pid_list_, test_ppi, _ = get_homo_ppi_idx(test_pid_list, test_cnf['fasta_file'],
                                                                       None, net_pid_map, net_blastdb,
-                                                                      data_cnf['results']/F'{data_name}-{test_name}'
-                                                                                          F'-ppi-blast-out')
+                                                                      data_cnf['results']/f'{data_name}-{test_name}-ppi-blast-out')
         scores = np.zeros((len(test_pid_list), len(mlb.classes_)))
         scores[test_res_idx_] = model.predict(test_ppi, **model_cnf['test'])
-        res_path = data_cnf['results']/F'{run_name}-{test_name}'
+        res_path = data_cnf['results']/f'{run_name}-{test_name}'
         output_res(res_path.with_suffix('.txt'), test_pid_list, mlb.classes_, scores)
         np.save(res_path, scores)
 

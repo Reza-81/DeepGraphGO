@@ -3,79 +3,37 @@
 """
 Created on 2020/8/25
 @author yrh
-
 """
-
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import dgl
 from logzero import logger
 
-from deepgraphgo.modules import *
-
-__all__ = ['GcnNet']
+__all__ = ['FeedForwardNet']
 
 
-class GcnNet(nn.Module):
+class FeedForwardNet(nn.Module):
     """
     """
-
-    def __init__(self, *, labels_num, input_size, hidden_size, num_gcn=0, dropout=0.5, residual=True,
-                 embedding_dim=0, **kwargs):  # UPDATED: Added embedding_dim (default 0 = no embeddings)
-        super(GcnNet, self).__init__()
-        logger.info(F'GCN: labels_num={labels_num}, input size={input_size}, hidden_size={hidden_size}, '
-                    F'num_gcn={num_gcn}, dropout={dropout}, residual={residual}, embedding_dim={embedding_dim}')
+    def __init__(self, labels_num, input_size, hidden_size, dropout=0.5):
+        super(FeedForwardNet, self).__init__()
+        logger.info(f'FeedForwardNet: labels_num={labels_num}, input_size={input_size}, hidden_size={hidden_size}, dropout={dropout}')
         self.labels_num = labels_num
-        self.input = nn.EmbeddingBag(input_size, hidden_size, mode='sum', include_last_offset=True)
-        self.input_bias = nn.Parameter(torch.zeros(hidden_size))
+        self.fc1 = nn.Linear(input_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
-        self.update = nn.ModuleList(NodeUpdate(hidden_size, hidden_size, dropout) for _ in range(num_gcn))
-        self.output = nn.Linear(hidden_size, self.labels_num)
-        self.residual = residual
-        self.num_gcn = num_gcn
-        # NEW: If using embeddings, add a layer to concat and project back to hidden_size
-        self.embedding_dim = embedding_dim
-        if embedding_dim > 0:
-            self.concat_fc = nn.Linear(hidden_size + embedding_dim, hidden_size)
-        else:
-            self.concat_fc = None
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.output = nn.Linear(hidden_size, labels_num)
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.xavier_uniform_(self.input.weight)
-        for update in self.update:
-            update.reset_parameters()
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
         nn.init.xavier_uniform_(self.output.weight)
-        if self.concat_fc is not None:  # NEW
-            nn.init.xavier_uniform_(self.concat_fc.weight)
 
-    def forward(self, blocks, inputs, node_emb=None):  # UPDATED: Added node_emb param (tensor or None)
-        h = self.dropout(F.relu(self.input(*inputs) + self.input_bias))
-        # NEW: Concat embeddings if provided
-        if self.concat_fc is not None and node_emb is not None:
-            h = torch.cat((h, node_emb), dim=1)
-            h = F.relu(self.concat_fc(h))
-        for i, (block, update) in enumerate(zip(blocks, self.update)):
-            # Message passing for each block/layer
-            # Get source and destination node features
-            h_src = h
-            # Edge weights for 'ppi' and 'self'
-            ppi = block.edata['ppi'].unsqueeze(-1)
-            if self.residual:
-                self_w = block.edata['self'].unsqueeze(-1)
-                m_res = h_src[block.edges()[0]] * self_w
-                res = torch.zeros((block.num_dst_nodes(), h_src.shape[1]), device=h_src.device)
-                res = res.index_add(0, block.edges()[1], m_res)
-            else:
-                res = None
-            ppi_m_out = h_src[block.edges()[0]] * ppi
-            ppi_out = torch.zeros((block.num_dst_nodes(), h_src.shape[1]), device=h_src.device)
-            ppi_out = ppi_out.index_add(0, block.edges()[1], ppi_m_out)
-            # NodeUpdate expects ppi_out and optionally res
-            if res is not None:
-                h = update(ppi_out, res)
-            else:
-                h = update(ppi_out)
+    def forward(self, x):
+        h = F.relu(self.fc1(x))
+        h = self.dropout(h)
+        h = F.relu(self.fc2(h))
+        h = self.dropout(h)
         return self.output(h)
