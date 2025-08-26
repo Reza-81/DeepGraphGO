@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Generate Node2Vec embeddings from the filtered PPI matrix (sparse npz) without NetworkX.
-Uses on-the-fly random walks to reduce RAM usage.
+Uses on-the-fly random walks with a single-pass Word2Vec to reduce RAM usage.
 """
 
 import click
@@ -13,6 +13,7 @@ import random
 from pathlib import Path
 from ruamel.yaml import YAML
 from logzero import logger
+from tqdm import tqdm
 
 try:
     from numba import njit
@@ -56,11 +57,9 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
             neighbors = indices[cur_start:cur_end]
             weights = data[cur_start:cur_end]
             if len(walk) == 1:
-                # First step: use normalized edge weights
                 sum_w = weights.sum()
                 probs = weights / sum_w if sum_w > 0 else np.ones(len(weights)) / len(weights)
             else:
-                # Biased walk using p, q
                 prev = walk[-2]
                 prev_start = indptr[prev]
                 prev_end = indptr[prev + 1]
@@ -78,7 +77,7 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
                 probs = adj_weights / sum_w if sum_w > 0 else np.ones(len(adj_weights)) / len(adj_weights)
             next_node = random.choices(neighbors, weights=probs, k=1)[0]
             walk.append(next_node)
-        return [str(node) for node in walk]  # Word2Vec expects string keys
+        return [str(node) for node in walk]
 
     if HAS_NUMBA:
         @njit
@@ -130,14 +129,16 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
             walk = simulate_walk_jit(indptr, indices, data, start, length, p, q)
             return [str(node) for node in walk]
 
-    # Generator for walks to avoid storing all in memory
-    def walk_generator():
-        for start in range(num_nodes):
-            for _ in range(num_walks):
-                yield simulate_walk(start, walk_length, p, q)
+    # Collect walks into a list for single-pass training
+    logger.info(f'Generating {num_walks} walks of length {walk_length} per node')
+    walks = []
+    for start in tqdm(range(num_nodes), desc="Generating walks"):
+        for _ in range(num_walks):
+            walks.append(simulate_walk(start, walk_length, p, q))
 
+    logger.info(f'Generated {len(walks)} walks')
     logger.info(f'Generating embeddings with Word2Vec (dim={dim}, walk_length={walk_length}, num_walks={num_walks})')
-    model = Word2Vec(sentences=walk_generator(), vector_size=dim, window=10, min_count=1, 
+    model = Word2Vec(sentences=walks, vector_size=dim, window=10, min_count=1, 
                      sg=1, workers=4, epochs=1)
 
     logger.info('Extracting embeddings')
