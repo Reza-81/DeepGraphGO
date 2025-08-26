@@ -50,6 +50,15 @@ def main(data_cnf, model_cnf, mode, model_id):
     logger.info(F'{dgl_graph}')
     network_x = ssp.load_npz(data_cnf['network']['feature'])
 
+    # NEW: Load Node2Vec embeddings (assumes generated beforehand)
+    emb_path = 'data/ppi_node2vec_embeddings.npy'
+    if Path(emb_path).exists():
+        embeddings = torch.from_numpy(np.load(emb_path)).float().cuda()
+        logger.info(f'Loaded embeddings from {emb_path}, shape: {embeddings.shape}')
+    else:
+        embeddings = None
+        logger.warning(f'Embeddings file {emb_path} not found; running without embeddings.')
+
     if mode is None or mode == 'train':
         train_pid_list, _, train_go = get_data(**data_cnf['train'])
         valid_pid_list, _, valid_go = get_data(**data_cnf['valid'])
@@ -67,7 +76,7 @@ def main(data_cnf, model_cnf, mode, model_id):
         logger.info(F'Size of Validation Set: {len(valid_ppi)}')
 
         model = Model(labels_num=labels_num, dgl_graph=dgl_graph, network_x=network_x,
-                      input_size=network_x.shape[1], **model_cnf['model'])
+                      input_size=network_x.shape[1], embeddings=embeddings, **model_cnf['model'])  # UPDATED: Pass embeddings
         model.train((train_ppi, train_y), (valid_ppi, valid_y), **model_cnf['train'])
 
     if mode is None or mode == 'eval':
@@ -75,7 +84,7 @@ def main(data_cnf, model_cnf, mode, model_id):
         labels_num = len(mlb.classes_)
         if model is None:
             model = Model(labels_num=labels_num, dgl_graph=dgl_graph, network_x=network_x,
-                          input_size=network_x.shape[1], **model_cnf['model'])
+                          input_size=network_x.shape[1], embeddings=embeddings, **model_cnf['model'])  # UPDATED: Pass embeddings
         test_cnf = data_cnf['test']
         test_name = test_cnf.pop('name')
         test_pid_list, _, test_go = get_data(**test_cnf)

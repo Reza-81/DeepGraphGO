@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8
+# -*- coding: utf-8 -*-
 """
 Created on 2020/8/25
 @author yrh
@@ -25,7 +25,7 @@ class Model(object):
     """
 
     """
-    def __init__(self, *, model_path: Path, dgl_graph, network_x, **kwargs):
+    def __init__(self, *, model_path: Path, dgl_graph, network_x, embeddings=None, **kwargs):  # UPDATED: Added embeddings param
         self.model = self.network = GcnNet(**kwargs)
         self.dp_network = nn.DataParallel(self.network.cuda())
         model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,18 +33,20 @@ class Model(object):
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.optimizer = None
         self.dgl_graph, self.network_x, self.batch_size = dgl_graph, network_x, None
+        self.embeddings = embeddings  # NEW: Store embeddings (torch.Tensor or None)
 
-    def get_scores(self, blocks, batch_x):
-        # blocks: list of dgl.Block, batch_x: input features for the first block
-        scores = self.network(blocks, batch_x)
+    def get_scores(self, blocks, batch_x, input_nodes):  # UPDATED: Added input_nodes param
+        # NEW: Slice embeddings for input nodes if available
+        node_emb = self.embeddings[input_nodes] if self.embeddings is not None else None
+        scores = self.network(blocks, batch_x, node_emb=node_emb)  # UPDATED: Pass node_emb
         return scores
 
     def get_optimizer(self, **kwargs):
         self.optimizer = torch.optim.AdamW(self.model.parameters(), **kwargs)
 
-    def train_step(self, blocks, batch_x, batch_y, update, **kwargs):
+    def train_step(self, blocks, batch_x, batch_y, input_nodes, update, **kwargs):  # UPDATED: Added input_nodes
         self.model.train()
-        scores = self.get_scores(blocks, batch_x)
+        scores = self.get_scores(blocks, batch_x, input_nodes)  # UPDATED: Pass input_nodes
         loss = self.loss_fn(scores, batch_y.cuda())
         loss.backward()
         if update and self.optimizer is not None:
@@ -80,12 +82,13 @@ class Model(object):
                 # batch_y: labels for output_nodes
                 batch_y = train_y[ppi_train_idx[output_nodes.cpu().numpy()]].toarray()
                 batch_y = torch.from_numpy(batch_y)
-                train_loss += self.train_step(blocks, batch_x, batch_y, True)
+                # UPDATED: Pass input_nodes to train_step
+                train_loss += self.train_step(blocks, batch_x, batch_y, input_nodes.cpu(), True)  # Note: input_nodes.cpu() if needed, but since indices are int
             best_fmax = self.valid(valid_ppi, valid_y, epoch_idx, train_loss / len(train_ppi), best_fmax)
 
-    def valid(self, valid_loader, targets, epoch_idx, train_loss, best_fmax):
-        scores = self.predict(valid_loader, valid=True)
-        (fmax_, t_), aupr_ = fmax(targets, scores), aupr(targets.toarray().flatten(), scores.flatten())
+    def valid(self, valid_ppi, valid_y, epoch_idx, train_loss, best_fmax):  # Note: valid_loader -> valid_ppi
+        scores = self.predict(valid_ppi, valid=True)
+        (fmax_, t_), aupr_ = fmax(valid_y, scores), aupr(valid_y.toarray().flatten(), scores.flatten())
         logger.info(F'Epoch {epoch_idx}: Loss: {train_loss:.5f} '
                     F'Fmax: {fmax_:.3f} {t_:.2f} AUPR: {aupr_:.3f}')
         if fmax_ > best_fmax:
@@ -94,9 +97,9 @@ class Model(object):
         return best_fmax
 
     @torch.no_grad()
-    def predict_step(self, blocks, batch_x):
+    def predict_step(self, blocks, batch_x, input_nodes):  # UPDATED: Added input_nodes
         self.model.eval()
-        return torch.sigmoid(self.get_scores(blocks, batch_x)).cpu().numpy()
+        return torch.sigmoid(self.get_scores(blocks, batch_x, input_nodes)).cpu().numpy()  # UPDATED: Pass input_nodes
 
     def predict(self, test_ppi, batch_size=None, valid=False, **kwargs):
         if batch_size is None:
@@ -112,13 +115,15 @@ class Model(object):
         test_ppi_idx = np.asarray([mapping[x] for x in test_ppi])
         scores_list = []
         for input_nodes, output_nodes, blocks in test_dataloader:
-            batch_x = self.network_x[input_nodes.cpu().numpy()]
+            input_nodes_cpu = input_nodes.cpu()  # For slicing
+            batch_x = self.network_x[input_nodes_cpu.numpy()]
             batch_x = (
                 torch.from_numpy(batch_x.indices).cuda().long(),
                 torch.from_numpy(batch_x.indptr).cuda().long(),
                 torch.from_numpy(batch_x.data).cuda().float()
             )
-            batch_scores = self.predict_step(blocks, batch_x)
+            # UPDATED: Pass input_nodes (use cpu for indexing if embeddings on cuda)
+            batch_scores = self.predict_step(blocks, batch_x, input_nodes_cpu)
             scores_list.append(batch_scores)
         scores = np.vstack(scores_list)
         return scores[test_ppi_idx]

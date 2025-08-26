@@ -2,7 +2,9 @@ name: DeepGraphGO
 
 model:
   hidden_size: 512
-  num_gcn: 2
+  # num_gcn: 2
+  num_gcn: 0
+  embedding_dim: 128
 
 train:
   epochs_num: 100

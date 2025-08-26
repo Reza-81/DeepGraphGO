@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8
+# -*- coding: utf-8 -*-
 """
 Created on 2020/8/25
 @author yrh
@@ -23,10 +23,10 @@ class GcnNet(nn.Module):
     """
 
     def __init__(self, *, labels_num, input_size, hidden_size, num_gcn=0, dropout=0.5, residual=True,
-                 **kwargs):
+                 embedding_dim=0, **kwargs):  # UPDATED: Added embedding_dim (default 0 = no embeddings)
         super(GcnNet, self).__init__()
         logger.info(F'GCN: labels_num={labels_num}, input size={input_size}, hidden_size={hidden_size}, '
-                    F'num_gcn={num_gcn}, dropout={dropout}, residual={residual}')
+                    F'num_gcn={num_gcn}, dropout={dropout}, residual={residual}, embedding_dim={embedding_dim}')
         self.labels_num = labels_num
         self.input = nn.EmbeddingBag(input_size, hidden_size, mode='sum', include_last_offset=True)
         self.input_bias = nn.Parameter(torch.zeros(hidden_size))
@@ -35,6 +35,12 @@ class GcnNet(nn.Module):
         self.output = nn.Linear(hidden_size, self.labels_num)
         self.residual = residual
         self.num_gcn = num_gcn
+        # NEW: If using embeddings, add a layer to concat and project back to hidden_size
+        self.embedding_dim = embedding_dim
+        if embedding_dim > 0:
+            self.concat_fc = nn.Linear(hidden_size + embedding_dim, hidden_size)
+        else:
+            self.concat_fc = None
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -42,10 +48,15 @@ class GcnNet(nn.Module):
         for update in self.update:
             update.reset_parameters()
         nn.init.xavier_uniform_(self.output.weight)
+        if self.concat_fc is not None:  # NEW
+            nn.init.xavier_uniform_(self.concat_fc.weight)
 
-    def forward(self, blocks, inputs):
-        # blocks: list of dgl.Block, inputs: tuple for EmbeddingBag
+    def forward(self, blocks, inputs, node_emb=None):  # UPDATED: Added node_emb param (tensor or None)
         h = self.dropout(F.relu(self.input(*inputs) + self.input_bias))
+        # NEW: Concat embeddings if provided
+        if self.concat_fc is not None and node_emb is not None:
+            h = torch.cat((h, node_emb), dim=1)
+            h = F.relu(self.concat_fc(h))
         for i, (block, update) in enumerate(zip(blocks, self.update)):
             # Message passing for each block/layer
             # Get source and destination node features
