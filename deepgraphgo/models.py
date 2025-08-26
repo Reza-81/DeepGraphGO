@@ -14,6 +14,7 @@ from tqdm import tqdm
 from logzero import logger
 import dgl.dataloading as dgldl
 
+from deepgraphgo.networks import FeedForwardNet
 from deepgraphgo.evaluation import fmax, aupr
 
 __all__ = ['Model']
