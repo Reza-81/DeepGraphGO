@@ -3,7 +3,7 @@
 """
 Generate Node2Vec embeddings from the filtered PPI matrix (sparse npz) without NetworkX.
 Uses on-the-fly random walks with a single-pass Word2Vec to reduce RAM usage.
-Includes progress tracking for Word2Vec training and embedding extraction.
+Includes progress tracking, disk-based walk storage, and file logging.
 """
 
 import click
@@ -12,9 +12,10 @@ import scipy.sparse as ssp
 from gensim.models import Word2Vec
 from gensim.models.callbacks import CallbackAny2Vec
 import random
+import pickle
 from pathlib import Path
 from ruamel.yaml import YAML
-from logzero import logger
+from logzero import logger, logfile
 from tqdm import tqdm
 
 try:
@@ -30,11 +31,16 @@ except ImportError:
 @click.option('-f', '--filtered-npz', type=click.Path(exists=True), required=True, 
               help='Path to filtered normalized PPI matrix npz (from preprocessing_1.py).')
 @click.option('--dim', type=int, default=128, help='Embedding dimension.')
-@click.option('--walk-length', type=int, default=80, help='Length of each random walk.')
-@click.option('--num-walks', type=int, default=10, help='Number of walks per node.')
+@click.option('--walk-length', type=int, default=40, help='Length of each random walk.')
+@click.option('--num-walks', type=int, default=5, help='Number of walks per node.')
 @click.option('--p', type=float, default=1.0, help='Node2Vec p parameter.')
 @click.option('--q', type=float, default=1.0, help='Node2Vec q parameter.')
 def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
+    # Set up logging to file
+    log_path = Path('logs/generate_embeddings.log')
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logfile(log_path, maxBytes=1e6, backupCount=3)
+    
     yaml = YAML(typ='safe')
     data_cnf = yaml.load(Path(data_cnf))
     
@@ -55,7 +61,7 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
             cur_start = indptr[cur]
             cur_end = indptr[cur + 1]
             if cur_start == cur_end:
-                break  # No neighbors
+                break
             neighbors = indices[cur_start:cur_end]
             weights = data[cur_start:cur_end]
             if len(walk) == 1:
@@ -131,12 +137,25 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
             walk = simulate_walk_jit(indptr, indices, data, start, length, p, q)
             return [str(node) for node in walk]
 
-    # Collect walks into a list for single-pass training
-    logger.info(f'Generating {num_walks} walks of length {walk_length} per node')
-    walks = []
-    for start in tqdm(range(num_nodes), desc="Generating walks"):
-        for _ in range(num_walks):
-            walks.append(simulate_walk(start, walk_length, p, q))
+    # Check for existing walks file
+    walks_path = Path('data/ppi_walks.pkl')
+    if walks_path.exists():
+        logger.info(f'Loading walks from {walks_path}')
+        with open(walks_path, 'rb') as f:
+            walks = pickle.load(f)
+        logger.info(f'Loaded {len(walks)} walks')
+    else:
+        logger.info(f'Generating {num_walks} walks of length {walk_length} per node')
+        walks = []
+        for start in tqdm(range(num_nodes), desc="Generating walks"):
+            for _ in range(num_walks):
+                walks.append(simulate_walk(start, walk_length, p, q))
+        logger.info(f'Generated {len(walks)} walks')
+        logger.info(f'Saving walks to {walks_path}')
+        walks_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(walks_path, 'wb') as f:
+            pickle.dump(walks, f)
+        logger.info(f'Walks saved to {walks_path}')
 
     # Define callback for Word2Vec training progress
     class ProgressCallback(CallbackAny2Vec):
@@ -159,7 +178,6 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
             self.batch_count += model.batch_words
             self.progress_bar.update(model.batch_words)
 
-    logger.info(f'Generated {len(walks)} walks')
     logger.info(f'Generating embeddings with Word2Vec (dim={dim}, walk_length={walk_length}, num_walks={num_walks})')
     model = Word2Vec(
         sentences=walks,
