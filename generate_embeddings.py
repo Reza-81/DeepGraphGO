@@ -187,4 +187,3 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
 
 if __name__ == '__main__':
     main()
-```
