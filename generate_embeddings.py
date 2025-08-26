@@ -1,14 +1,17 @@
+```python
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Generate Node2Vec embeddings from the filtered PPI matrix (sparse npz) without NetworkX.
 Uses on-the-fly random walks with a single-pass Word2Vec to reduce RAM usage.
+Includes progress tracking for Word2Vec training and embedding extraction.
 """
 
 import click
 import numpy as np
 import scipy.sparse as ssp
 from gensim.models import Word2Vec
+from gensim.models.callbacks import CallbackAny2Vec
 import random
 from pathlib import Path
 from ruamel.yaml import YAML
@@ -136,14 +139,43 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
         for _ in range(num_walks):
             walks.append(simulate_walk(start, walk_length, p, q))
 
+    # Define callback for Word2Vec training progress
+    class ProgressCallback(CallbackAny2Vec):
+        def __init__(self, total_sentences):
+            self.total_sentences = total_sentences
+            self.epoch = 0
+            self.batch_count = 0
+            self.progress_bar = None
+
+        def on_epoch_begin(self, model):
+            logger.info(f'Starting Word2Vec epoch {self.epoch + 1}')
+            self.progress_bar = tqdm(total=self.total_sentences, desc=f'Word2Vec Epoch {self.epoch + 1}')
+
+        def on_epoch_end(self, model):
+            self.progress_bar.close()
+            self.epoch += 1
+            self.batch_count = 0
+
+        def on_batch_end(self, model):
+            self.batch_count += model.batch_words
+            self.progress_bar.update(model.batch_words)
+
     logger.info(f'Generated {len(walks)} walks')
     logger.info(f'Generating embeddings with Word2Vec (dim={dim}, walk_length={walk_length}, num_walks={num_walks})')
-    model = Word2Vec(sentences=walks, vector_size=dim, window=10, min_count=1, 
-                     sg=1, workers=4, epochs=1)
+    model = Word2Vec(
+        sentences=walks,
+        vector_size=dim,
+        window=10,
+        min_count=1,
+        sg=1,
+        workers=4,
+        epochs=1,
+        callbacks=[ProgressCallback(len(walks) * dim)]
+    )
 
     logger.info('Extracting embeddings')
     embeddings = np.zeros((num_nodes, dim), dtype=np.float32)
-    for i in range(num_nodes):
+    for i in tqdm(range(num_nodes), desc="Extracting embeddings"):
         node_str = str(i)
         if node_str in model.wv:
             embeddings[i] = model.wv[node_str]
@@ -156,3 +188,4 @@ def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
 
 if __name__ == '__main__':
     main()
+```
