@@ -1,23 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Generate Node2Vec embeddings from the filtered PPI matrix (sparse npz).
+Generate Node2Vec embeddings from the filtered PPI matrix (sparse npz) without NetworkX.
+Uses on-the-fly random walks to reduce RAM usage.
 """
 
 import click
 import numpy as np
 import scipy.sparse as ssp
-import networkx as nx
-from node2vec import Node2Vec
+from gensim.models import Word2Vec
+import random
 from pathlib import Path
 from ruamel.yaml import YAML
 from logzero import logger
+
+try:
+    from numba import njit
+    HAS_NUMBA = True
+    logger.info("Numba detected; using JIT for faster walk simulation.")
+except ImportError:
+    HAS_NUMBA = False
+    logger.warning("Numba not installed; walks will be slower. Install with 'pip install numba'.")
 
 @click.command()
 @click.option('-d', '--data-cnf', type=click.Path(exists=True), help='Path of dataset configure yaml.')
 @click.option('-f', '--filtered-npz', type=click.Path(exists=True), required=True, 
               help='Path to filtered normalized PPI matrix npz (from preprocessing_1.py).')
-def main(data_cnf, filtered_npz):
+@click.option('--dim', type=int, default=128, help='Embedding dimension.')
+@click.option('--walk-length', type=int, default=80, help='Length of each random walk.')
+@click.option('--num-walks', type=int, default=10, help='Number of walks per node.')
+@click.option('--p', type=float, default=1.0, help='Node2Vec p parameter.')
+@click.option('--q', type=float, default=1.0, help='Node2Vec q parameter.')
+def main(data_cnf, filtered_npz, dim, walk_length, num_walks, p, q):
     yaml = YAML(typ='safe')
     data_cnf = yaml.load(Path(data_cnf))
     
@@ -26,24 +40,115 @@ def main(data_cnf, filtered_npz):
     num_nodes = ppi_mat.shape[0]
     logger.info(f'Matrix loaded: shape={ppi_mat.shape}, nnz={ppi_mat.nnz}')
     
-    logger.info('Converting to NetworkX graph')
-    nx_G = nx.from_scipy_sparse_array(ppi_mat, edge_attribute='ppi').to_undirected()
-    logger.info(f'NetworkX graph created: nodes={nx_G.number_of_nodes()}, edges={nx_G.number_of_edges()}')
-    
-    logger.info('Generating Node2Vec embeddings')
-    node2vec = Node2Vec(nx_G, dimensions=128, walk_length=80, num_walks=10, p=1, q=1, 
-                        weight_key='ppi', workers=4)
-    model = node2vec.fit(window=10, min_count=1, batch_words=4)
-    
+    indptr = ppi_mat.indptr
+    indices = ppi_mat.indices
+    data = ppi_mat.data
+
+    # Simulate biased random walk (Node2Vec style)
+    def simulate_walk(start, length, p, q):
+        walk = [start]
+        for _ in range(length - 1):
+            cur = walk[-1]
+            cur_start = indptr[cur]
+            cur_end = indptr[cur + 1]
+            if cur_start == cur_end:
+                break  # No neighbors
+            neighbors = indices[cur_start:cur_end]
+            weights = data[cur_start:cur_end]
+            if len(walk) == 1:
+                # First step: use normalized edge weights
+                sum_w = weights.sum()
+                probs = weights / sum_w if sum_w > 0 else np.ones(len(weights)) / len(weights)
+            else:
+                # Biased walk using p, q
+                prev = walk[-2]
+                prev_start = indptr[prev]
+                prev_end = indptr[prev + 1]
+                prev_neighbors = set(indices[prev_start:prev_end])
+                alpha = np.zeros(len(neighbors), dtype=np.float32)
+                for i, w in enumerate(neighbors):
+                    if w == prev:
+                        alpha[i] = 1.0 / p
+                    elif w in prev_neighbors:
+                        alpha[i] = 1.0
+                    else:
+                        alpha[i] = 1.0 / q
+                adj_weights = alpha * weights
+                sum_w = adj_weights.sum()
+                probs = adj_weights / sum_w if sum_w > 0 else np.ones(len(adj_weights)) / len(adj_weights)
+            next_node = random.choices(neighbors, weights=probs, k=1)[0]
+            walk.append(next_node)
+        return [str(node) for node in walk]  # Word2Vec expects string keys
+
+    if HAS_NUMBA:
+        @njit
+        def simulate_walk_jit(indptr, indices, data, start, length, p, q):
+            walk = np.empty(length, dtype=np.int32)
+            walk[0] = start
+            walk_len = 1
+            for step in range(1, length):
+                cur = walk[step - 1]
+                cur_start = indptr[cur]
+                cur_end = indptr[cur + 1]
+                if cur_start == cur_end:
+                    break
+                neighbors = indices[cur_start:cur_end]
+                weights = data[cur_start:cur_end]
+                if step == 1:
+                    sum_w = np.sum(weights)
+                    probs = weights / sum_w if sum_w > 0 else np.ones(len(weights)) / len(weights)
+                else:
+                    prev = walk[step - 2]
+                    prev_start = indptr[prev]
+                    prev_end = indptr[prev + 1]
+                    alpha = np.zeros(len(neighbors))
+                    for i in range(len(neighbors)):
+                        w = neighbors[i]
+                        if w == prev:
+                            alpha[i] = 1.0 / p
+                        else:
+                            is_neighbor = False
+                            for j in range(prev_start, prev_end):
+                                if indices[j] == w:
+                                    is_neighbor = True
+                                    break
+                            if is_neighbor:
+                                alpha[i] = 1.0
+                            else:
+                                alpha[i] = 1.0 / q
+                    adj_weights = alpha * weights
+                    sum_w = np.sum(adj_weights)
+                    probs = adj_weights / sum_w if sum_w > 0 else np.ones(len(adj_weights)) / len(adj_weights)
+                cum_probs = np.cumsum(probs)
+                r = random.random() * cum_probs[-1]
+                next_idx = np.searchsorted(cum_probs, r)
+                walk[step] = neighbors[next_idx]
+                walk_len += 1
+            return walk[:walk_len]
+
+        def simulate_walk(start, length, p, q):
+            walk = simulate_walk_jit(indptr, indices, data, start, length, p, q)
+            return [str(node) for node in walk]
+
+    # Generator for walks to avoid storing all in memory
+    def walk_generator():
+        for start in range(num_nodes):
+            for _ in range(num_walks):
+                yield simulate_walk(start, walk_length, p, q)
+
+    logger.info(f'Generating embeddings with Word2Vec (dim={dim}, walk_length={walk_length}, num_walks={num_walks})')
+    model = Word2Vec(sentences=walk_generator(), vector_size=dim, window=10, min_count=1, 
+                     sg=1, workers=4, epochs=1)
+
     logger.info('Extracting embeddings')
-    embeddings = np.zeros((num_nodes, 128), dtype=np.float32)
+    embeddings = np.zeros((num_nodes, dim), dtype=np.float32)
     for i in range(num_nodes):
         node_str = str(i)
         if node_str in model.wv:
             embeddings[i] = model.wv[node_str]
         else:
             logger.warning(f'No embedding for node {i}; setting to zero.')
-    
+
     emb_path = 'data/ppi_node2vec_embeddings.npy'
     np.save(emb_path, embeddings)
     logger.info(f'Embeddings saved to {emb_path}, shape={embeddings.shape}')
